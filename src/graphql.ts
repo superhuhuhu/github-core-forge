@@ -754,7 +754,8 @@ export class GraphQLExecutor {
   private resolveConnection(field: FieldNode, value: { nodes: unknown[]; pageInfo: Record<string, unknown> }, args: Record<string, unknown>, variables: Record<string, unknown>): unknown {
     switch (field.name) {
       case 'nodes': {
-        const parentType = (value.nodes[0] as { issue?: unknown; pull?: unknown } | undefined)?.issue !== undefined ? 'Issue' : 'PullRequest';
+        const first = value.nodes[0] as { issue?: unknown; pull?: unknown; path?: unknown } | undefined;
+        const parentType = first !== undefined && 'path' in first ? 'PullRequestChangedFile' : first !== undefined && 'issue' in first ? 'Issue' : 'PullRequest';
         return value.nodes.map((node) => this.executeSelections(field.selections, { __type: parentType, __value: node }, variables));
       }
       case 'pageInfo': {

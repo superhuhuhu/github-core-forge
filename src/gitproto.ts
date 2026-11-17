@@ -118,7 +118,7 @@ function readVarintSize(buffer: Buffer, offset: number): { first: number; size: 
   let shift = 4;
   let pos = offset + 1;
   while ((buffer[pos - 1] as number) & 0x80) {
-    size |= (buffer[pos] as number & 0x7f) << shift;
+    size |= ((buffer[pos] as number) & 0x7f) << shift;
     shift += 7;
     pos += 1;
   }
@@ -446,7 +446,8 @@ export function parseV2Fetch(packets: DecodedPacket[]): FetchRequest {
 /** The objects a fetch must send, and the shallow-info lines for the answer. */
 export function planFetch(store: Store, repo: Repo, req: FetchRequest): { objects: GitObject[]; shallow: string[]; unshallow: string[] } {
   const depth = req.depth ?? null;
-  // The commits the client already holds: haves, minus the parents of shallow ones.
+  // The commits the client already holds: haves, minus the parents of shallow
+  // boundaries (a boundary commit's parents are NOT held).
   const haveCommits = new Set<string>();
   for (const have of req.haves) {
     if (req.shallow.includes(have)) {
@@ -455,9 +456,14 @@ export function planFetch(store: Store, repo: Repo, req: FetchRequest): { object
     }
     for (const oid of store.reachableCommits(repo, [have])) haveCommits.add(oid);
   }
+  // Objects the client holds: each held commit plus its tree closure (trees and
+  // blobs). For a shallow boundary only the boundary commit itself is held.
   const haveObjects = new Set<string>();
   for (const oid of haveCommits) {
-    for (const object of store.reachableObjects(repo, [oid])) haveObjects.add(object);
+    const commit = store.commitOf(repo, oid);
+    if (commit === null) continue;
+    haveObjects.add(oid);
+    for (const object of store.reachableObjects(repo, [commit.tree])) haveObjects.add(object);
   }
   // The want set, depth-limited when asked.
   const wantCommits = new Set<string>();
@@ -482,9 +488,16 @@ export function planFetch(store: Store, repo: Repo, req: FetchRequest): { object
       }
     }
   }
+  // Objects to send: each wanted commit plus its tree closure — NOT the
+  // parents' closures beyond the depth cut-off. (The old code walked the full
+  // reachable closure of every want commit, so a depth-1 fetch sent the whole
+  // history.)
   const wantObjects = new Set<string>();
   for (const oid of wantCommits) {
-    for (const object of store.reachableObjects(repo, [oid])) wantObjects.add(object);
+    const commit = store.commitOf(repo, oid);
+    if (commit === null) continue;
+    wantObjects.add(oid);
+    for (const object of store.reachableObjects(repo, [commit.tree])) wantObjects.add(object);
   }
   // Tags wanted directly also ride along.
   for (const oid of req.wants) {
@@ -675,14 +688,16 @@ export function applyPush(store: Store, repo: Repo, commands: readonly PushComma
   return { unpackOk: true, unpackDetail: 'ok', refs: entries };
 }
 
-/** The first unresolvable object id in a new tip's ancestry, or null when connected. */
+/** The first unresolvable object id in a new tip's ancestry, or null when connected. The walk stops below any current ref tip: a ref tip's ancestry was verified when the ref was set, so it is connected by induction. */
 function missingAncestry(store: Store, repo: Repo, tip: string): string | null {
+  const refTips = new Set(repo.refs.values());
   const seen = new Set<string>();
   const stack = [tip];
   while (stack.length > 0) {
     const oid = stack.pop() as string;
     if (seen.has(oid)) continue;
     seen.add(oid);
+    if (refTips.has(oid)) continue;
     const object = repo.objects.get(oid);
     if (object === undefined) return oid;
     if (object.type === 'commit') {

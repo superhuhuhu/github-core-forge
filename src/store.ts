@@ -180,7 +180,7 @@ export function parseCommit(data: Uint8Array): CommitView {
   const text = (Buffer.isBuffer(data) ? data : Buffer.from(data)).toString('utf8');
   const blank = text.indexOf('\n\n');
   const head = blank < 0 ? text : text.slice(0, blank);
-  const message = blank < 0 ? '' : text.slice(blank + 2);
+  const message = blank < 0 ? '' : text.slice(blank + 2).replace(/\n+$/, '');
   let tree = '';
   const parents: string[] = [];
   let author = '';
@@ -448,10 +448,23 @@ export class Store {
     return seen;
   }
 
-  /** Is `ancestor` an ancestor of (or equal to) `descendant`? */
+  /** Is `ancestor` an ancestor of (or equal to) `descendant`? Walks up from the descendant and stops as soon as the ancestor is found. */
   isAncestor(repo: Repo, ancestor: string, descendant: string): boolean {
     if (ancestor === descendant) return true;
-    return this.reachableCommits(repo, [descendant]).has(ancestor);
+    const seen = new Set<string>();
+    const stack = [descendant];
+    while (stack.length > 0) {
+      const oid = stack.pop() as string;
+      if (seen.has(oid)) continue;
+      seen.add(oid);
+      const commit = this.commitOf(repo, oid);
+      if (commit === null) continue;
+      for (const parent of commit.parents) {
+        if (parent === ancestor) return true;
+        stack.push(parent);
+      }
+    }
+    return false;
   }
 
   /** The best common ancestor of two commits (the merge base), or null. */
