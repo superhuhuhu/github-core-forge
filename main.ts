@@ -55,6 +55,8 @@ async function register(port: number): Promise<void> {
       if (res.status === 400 || res.status === 405) throw new Error(`register answered HTTP ${res.status}: ${await res.text()}`);
     } catch (err) {
       if (err instanceof Error && err.message.startsWith('register answered HTTP ')) throw err;
+      // Log the failure: a forge that never registers scores 0, and a silent retry loop leaves no trace of why.
+      process.stderr.write(`[entry] register attempt ${attempt} failed (${err instanceof Error ? err.message : String(err)}); retrying\n`);
     }
     await sleep(retryDelay(attempt));
   }
