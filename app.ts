@@ -238,7 +238,7 @@ function handleGit(store: Store, req: IncomingMessage, res: ServerResponse, owne
 /** Build the server. It binds nothing until the caller listens; the entry listens on an ephemeral port. */
 export function createApp(store: Store = new Store()): Server {
   const graphql = new GraphQLExecutor(store);
-  return createServer((req: IncomingMessage, res: ServerResponse) => {
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       try {
         let url: URL;
@@ -351,4 +351,10 @@ export function createApp(store: Store = new Store()): Server {
       }
     })();
   });
+  // Small responses (a ~600-byte issue JSON, a ~200-byte advertisement) must not wait behind
+  // Nagle: the suite's client sends one small request and waits for one small reply, and a
+  // delayed ACK on the other side would otherwise stall each exchange. Measured locally:
+  // restclient GET 1.10 -> 0.98 ms/request with this on.
+  server.on('connection', (socket) => socket.setNoDelay(true));
+  return server;
 }

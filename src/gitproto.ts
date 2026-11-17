@@ -221,17 +221,13 @@ export function readPack(pack: Buffer, resolveBase?: (oid: string) => GitObject 
     } else if (!CODE_TYPE[typeCode]) {
       throw new Error(`pack entry ${i} has unknown type code ${typeCode}`);
     }
-    const inflated = inflateSync(pack.subarray(offset, trailerStart));
-    if (inflated.length !== header.size) throw new Error(`pack entry at ${entryOffset} declares ${header.size} bytes but inflated to ${inflated.length}`);
-    entry.data = inflated;
-    // Advance past the zlib stream: inflateSync consumed to the stream end, which we
-    // cannot know from the return value alone — recompute by deflating? Instead, find
-    // the stream end by trying inflateSync on progressively longer slices is too slow.
-    // We use zlib's unused_data via a different route: re-inflate with a limited
-    // window is not available, so track the consumed length with inflateSync on the
-    // remaining buffer and measure via the next entry's start: the deflated stream's
-    // length is found by binary search on the smallest prefix that inflates fully.
-    offset = offset + deflatedLength(pack.subarray(offset, trailerStart), header.size);
+    // One inflate with {info: true} returns both the inflated bytes and exactly how many input
+    // bytes the stream consumed (engine.bytesWritten), so the next entry's start is known without
+    // a second inflate of the same stream.
+    const result = inflateSync(pack.subarray(offset, trailerStart), { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+    if (result.buffer.length !== header.size) throw new Error(`pack entry at ${entryOffset} declares ${header.size} bytes but inflated to ${result.buffer.length}`);
+    entry.data = result.buffer;
+    offset = offset + result.engine.bytesWritten;
     raw.push(entry);
     byOffset.set(entryOffset, entry);
   }
@@ -284,13 +280,6 @@ export function readPack(pack: Buffer, resolveBase?: (oid: string) => GitObject 
     if (!objects.has(resolved.oid)) objects.set(resolved.oid, { type: resolved.type, data: resolved.data });
   }
   return { objects, deltaCount };
-}
-
-/** The byte length of a zlib stream at the start of `buffer` that inflates to `size` bytes. One inflateSync with `{info: true}` reports exactly how many input bytes the stream consumed (engine.bytesWritten) — no binary search, no thrown errors on short prefixes. */
-function deflatedLength(buffer: Buffer, size: number): number {
-  const result = inflateSync(buffer, { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
-  if (result.buffer.length !== size) throw new Error(`deflate stream inflated to ${result.buffer.length} bytes, expected ${size}`);
-  return result.engine.bytesWritten;
 }
 
 // ---------------------------------------------------------------- advertisements
