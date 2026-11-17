@@ -464,7 +464,7 @@ export class GraphQLExecutor {
       }
     }
     try {
-      const data = this.executeSelections(operation.selections, { __type: 'Query', __value: null }, mergedVariables);
+      const data = this.executeSelections(operation.selections, { __type: operation.kind === 'mutation' ? 'Mutation' : 'Query', __value: null }, mergedVariables);
       return { data };
     } catch (err) {
       if (err instanceof GqlFailure) return { data: null, errors: [{ message: err.message }] };

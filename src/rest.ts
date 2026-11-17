@@ -472,8 +472,22 @@ function handleIssues(ctx: RestContext, method: string, repo: Repo, rest: string
 }
 
 function handlePulls(ctx: RestContext, method: string, repo: Repo, rest: string[]): RestOutcome {
-  // POST /pulls
+  // POST /pulls ; GET /pulls?state=&sort=&direction=
   if (rest.length === 0) {
+    if (method === 'GET') {
+      const state = ctx.url.searchParams.get('state') ?? 'open';
+      const sort = ctx.url.searchParams.get('sort') ?? 'created';
+      const direction = ctx.url.searchParams.get('direction') ?? 'desc';
+      let pulls = repo.pulls.filter((p) => {
+        const effective = p.merged ? 'closed' : p.state;
+        return state === 'all' || effective === state;
+      });
+      if (sort === 'created') {
+        pulls = [...pulls].sort((a, b) => (direction === 'asc' ? a.number - b.number : b.number - a.number));
+      }
+      const { page, link } = paginate(pulls, ctx.url, ctx.origin);
+      return ok(200, page.map((p) => pullJson(repo, p)), link === null ? undefined : { Link: link });
+    }
     if (method !== 'POST') return notFound();
     const created = ctx.store.createPull(
       repo,

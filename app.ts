@@ -181,7 +181,7 @@ function handleGit(store: Store, req: IncomingMessage, res: ServerResponse, owne
   if (method === 'GET' && rest === 'info/refs') {
     const wantsV2 = (req.headers['git-protocol'] ?? '') === 'version=2';
     if (service === 'git-receive-pack' || !wantsV2) {
-      sendBytes(res, 200, advertiseV0(store, repo, service), `application/x-git-${service}-advertisement`);
+      sendBytes(res, 200, advertiseV0(store, repo, service), `application/x-${service}-advertisement`);
     } else {
       sendBytes(res, 200, advertiseV2(), 'application/x-git-upload-pack-advertisement');
     }
