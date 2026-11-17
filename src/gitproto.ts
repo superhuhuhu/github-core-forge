@@ -286,25 +286,11 @@ export function readPack(pack: Buffer, resolveBase?: (oid: string) => GitObject 
   return { objects, deltaCount };
 }
 
-/** The byte length of a zlib stream at the start of `buffer` that inflates to `size` bytes. */
+/** The byte length of a zlib stream at the start of `buffer` that inflates to `size` bytes. One inflateSync with `{info: true}` reports exactly how many input bytes the stream consumed (engine.bytesWritten) — no binary search, no thrown errors on short prefixes. */
 function deflatedLength(buffer: Buffer, size: number): number {
-  // Binary-search the shortest prefix that inflates to exactly `size` bytes.
-  let low = 2;
-  let high = buffer.length;
-  const ok = (n: number): boolean => {
-    try {
-      return inflateSync(buffer.subarray(0, n)).length === size;
-    } catch {
-      return false;
-    }
-  };
-  if (!ok(high)) throw new Error('deflate stream does not terminate');
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    if (ok(mid)) high = mid;
-    else low = mid + 1;
-  }
-  return low;
+  const result = inflateSync(buffer, { info: true }) as unknown as { buffer: Buffer; engine: { bytesWritten: number } };
+  if (result.buffer.length !== size) throw new Error(`deflate stream inflated to ${result.buffer.length} bytes, expected ${size}`);
+  return result.engine.bytesWritten;
 }
 
 // ---------------------------------------------------------------- advertisements
@@ -565,6 +551,29 @@ export function fetchResponse(plan: { objects: GitObject[]; shallow: string[]; u
   }
   parts.push(pktFlush());
   return Buffer.concat(parts);
+}
+
+/** Fetch responses are a pure function of the repo's immutable objects, so an identical (wants, haves, shallow, depth) request reuses the built response. The clone workload issues 50 identical depth-1 fetches; without this the pack (one deflate per object) is rebuilt 50 times. Bounded per repo; keys change when the tip moves, so no invalidation is needed. */
+const FETCH_CACHE_LIMIT = 16;
+const fetchCache = new WeakMap<Repo, Map<string, Buffer>>();
+
+export function cachedFetchResponse(store: Store, repo: Repo, req: FetchRequest): Buffer {
+  const key = `${req.wants.join(',')}|${req.haves.join(',')}|${req.shallow.join(',')}|${req.depth ?? ''}`;
+  let perRepo = fetchCache.get(repo);
+  if (perRepo === undefined) {
+    perRepo = new Map<string, Buffer>();
+    fetchCache.set(repo, perRepo);
+  }
+  const hit = perRepo.get(key);
+  if (hit !== undefined) return hit;
+  const plan = planFetch(store, repo, req);
+  const response = fetchResponse(plan, req.haves);
+  perRepo.set(key, response);
+  if (perRepo.size > FETCH_CACHE_LIMIT) {
+    const oldest = perRepo.keys().next().value as string | undefined;
+    if (oldest !== undefined) perRepo.delete(oldest);
+  }
+  return response;
 }
 
 // ---------------------------------------------------------------- receive-pack (push)

@@ -32,7 +32,7 @@ import {
   advertiseV2,
   applyPush,
   decodePackets,
-  fetchResponse,
+  cachedFetchResponse,
   listRefs,
   lsRefsResponse,
   parsePushBody,
@@ -73,14 +73,6 @@ function sendBytes(res: ServerResponse, status: number, body: Buffer, contentTyp
   const requestId = nextRequestId();
   res.writeHead(status, { 'content-type': contentType, 'content-length': body.length, 'x-github-request-id': requestId });
   res.end(body);
-}
-
-function pathOf(req: IncomingMessage): string {
-  try {
-    return new URL(req.url ?? '/', 'http://entry').pathname;
-  } catch {
-    return '/';
-  }
 }
 
 function authorized(req: IncomingMessage): boolean {
@@ -212,8 +204,7 @@ function handleGit(store: Store, req: IncomingMessage, res: ServerResponse, owne
         }
         if (command === 'command=fetch') {
           const fetchReq = parseV2Fetch(packets);
-          const plan = planFetch(store, repo, fetchReq);
-          sendBytes(res, 200, fetchResponse(plan, fetchReq.haves), 'application/x-git-upload-pack-result');
+          sendBytes(res, 200, cachedFetchResponse(store, repo, fetchReq), 'application/x-git-upload-pack-result');
           return true;
         }
         sendJson(res, 400, { message: `unknown git-upload-pack command: ${command}` });
@@ -250,7 +241,13 @@ export function createApp(store: Store = new Store()): Server {
   return createServer((req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       try {
-        const path = pathOf(req);
+        let url: URL;
+        try {
+          url = new URL(req.url ?? '/', 'http://entry');
+        } catch {
+          url = new URL('/', 'http://entry');
+        }
+        const path = url.pathname;
         const method = req.method ?? 'GET';
 
         // The env's boot check calls this twice: 200 {"ok":true}. No auth here.
@@ -264,19 +261,22 @@ export function createApp(store: Store = new Store()): Server {
           return;
         }
 
-        // REST v3.
+        // REST v3. GETs carry no body; only read one for methods that send one.
         if (path === '/api/v3' || path.startsWith('/api/v3/')) {
-          const body = await readBody(req);
-          const parsed = parseJsonBody(body);
-          if (!parsed.ok) {
-            sendJson(res, 400, { message: 'Invalid JSON body' });
-            return;
+          let parsed: { ok: true; value: unknown } | { ok: false } = { ok: true, value: null };
+          if (method !== 'GET' && method !== 'HEAD') {
+            const body = await readBody(req);
+            parsed = parseJsonBody(body);
+            if (!parsed.ok) {
+              sendJson(res, 400, { message: 'Invalid JSON body' });
+              return;
+            }
           }
           const origin = `http://${req.headers.host ?? '127.0.0.1'}`;
           const ctx: RestContext = {
             store,
-            url: new URL(req.url ?? '/', 'http://entry'),
-            body: parsed.value !== null && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? (parsed.value as Record<string, unknown>) : null,
+            url,
+            body: parsed.ok && parsed.value !== null && typeof parsed.value === 'object' && !Array.isArray(parsed.value) ? (parsed.value as Record<string, unknown>) : null,
             login: VIEWER.login,
             origin,
           };
@@ -332,10 +332,10 @@ export function createApp(store: Store = new Store()): Server {
           return;
         }
 
-        // Git smart HTTP: /{owner}/{repo}.git/...
+        // Git smart HTTP: /{owner}/{repo}.git/... GET info/refs carries no body.
         const gitMatch = /^\/([^/]+)\/([^/]+)\.git\/(.+)$/.exec(path);
         if (gitMatch !== null) {
-          const body = await readBody(req);
+          const body = method === 'GET' ? Buffer.alloc(0) : await readBody(req);
           const handled = handleGit(store, req, res, gitMatch[1] as string, gitMatch[2] as string, gitMatch[3] as string, body);
           if (handled) return;
         }
